@@ -11,31 +11,41 @@
 const expect = require("chai").expect;
 const Board = require("../models/board.js");
 
-module.exports = function(app) {
+module.exports = function (app) {
   app
     .route("/api/threads/:board")
     .get((req, res) => {
       const { board } = req.params;
-      Board.find({ name: board })
-        .sort({ "threads.bumped_on": -1 })
-        .limit(10)
+      Board.findOne({ name: board })
         .select({
           "threads.delete_password": 0,
           "threads.reported": 0,
           "threads.replies.delete_password": 0,
-          "threads.replies.reported": 0
+          "threads.replies.reported": 0,
         })
         .exec((err, docs) => {
           if (err) {
             res.json({ err });
             return;
           }
-          console.log(docs);
+          const lastBumped = docs.threads
+            .sort((a, b) => b.bumped_on - a.bumped_on)
+            .slice(0, 10);
+          let lastReplies = [];
+          lastBumped.map((item, i) => {
+            lastReplies = item.replies
+              .sort((a, b) => b.created_on - a.created_on)
+              .slice(0, 3);
+            lastBumped[i].replies = lastReplies;
+          });
+          docs.threads = lastBumped;
+
           res.json(docs);
         });
     })
     .post((req, res) => {
-      const { board, text, delete_password } = req.body;
+      const { board } = req.params;
+      const { text, delete_password } = req.body;
       Board.findOneAndUpdate(
         { name: board },
         { $push: { threads: { text, delete_password } } },
@@ -54,10 +64,8 @@ module.exports = function(app) {
       const { thread_id } = req.body;
       Board.findOneAndUpdate(
         { name: board },
-        {
-          $set: { "threads.$[elem].reported": true },
-          arrayFilter: [{ "elem._id": thread_id }]
-        },
+        { $set: { "threads.$[elem].reported": true } },
+        { arrayFilters: [{ "elem._id": thread_id }] },
         (err, doc) => {
           if (err) {
             res.json({ err });
@@ -74,9 +82,9 @@ module.exports = function(app) {
     .delete((req, res) => {
       const { board } = req.params;
       const { thread_id, delete_password } = req.body;
-      Board.findOneAndUpdate(
+      Board.updateOne(
         { name: board },
-        { $pull: { threads: { id: thread_id, delete_password } } },
+        { $pull: { threads: { _id: thread_id, delete_password } } },
         (err, doc) => {
           if (err) {
             res.json({ err });
@@ -96,19 +104,18 @@ module.exports = function(app) {
     .get((req, res) => {
       const { board } = req.params;
       const { thread_id } = req.query;
-      Board.find({ name: board, "threads.id": thread_id })
+      Board.find({ name: board, "threads._id": thread_id })
         .select({
           "threads.delete_password": 0,
           "threads.reported": 0,
           "threads.replies.delete_password": 0,
-          "threads.replies.reported": 0
+          "threads.replies.reported": 0,
         })
         .exec((err, docs) => {
           if (err) {
             res.json({ err });
             return;
           }
-          console.log(docs);
           res.json(docs);
         });
     })
@@ -118,9 +125,9 @@ module.exports = function(app) {
         { name: board, threads: { $elemMatch: { _id: thread_id } } },
         {
           $push: {
-            "threads.$.replies": { text, delete_password }
+            "threads.$.replies": { text, delete_password },
           },
-          "threads.$.bumped_on": Date.now()
+          "threads.$.bumped_on": Date.now(),
         },
         (err, doc) => {
           if (err) {
@@ -131,6 +138,7 @@ module.exports = function(app) {
             res.json({ errors: "no thread founded" });
             return;
           }
+          res.status(300);
           res.redirect(`/b/${board}/${thread_id}`);
         }
       );
@@ -138,13 +146,18 @@ module.exports = function(app) {
     .put((req, res) => {
       const { board } = req.params;
       const { thread_id, reply_id, delete_password } = req.body;
-      Board.findOneAndUpdate(
+      Board.updateOne(
         { name: board },
         {
           $set: {
-            "threads.$[thread].replies.$[reply].reported": true
+            "threads.$[thread].replies.$[reply].reported": true,
           },
-          arrayFilters: [{ "thread._id": thread_id }, { "reply._id": reply_id }]
+        },
+        {
+          arrayFilters: [
+            { "thread._id": thread_id },
+            { "reply._id": reply_id },
+          ],
         },
         (err, doc) => {
           if (err) {
@@ -162,25 +175,25 @@ module.exports = function(app) {
     .delete((req, res) => {
       const { board } = req.params;
       const { thread_id, reply_id, delete_password } = req.body;
-      Board.findOneAndUpdate(
+      Board.updateOne(
         { name: board },
         {
           $set: {
-            "threads.$[thread].replies.$[reply].text": "deleted"
+            "threads.$[thread].replies.$[reply].text": "deleted",
           },
+        },
+        {
           arrayFilters: [
             { "thread._id": thread_id },
             {
               "reply._id": reply_id,
-              "reply.delete_password": delete_password
-            }
-          ]
+              "reply.delete_password": delete_password,
+            },
+          ],
         },
         (err, doc) => {
-          console.log(doc);
           if (err) {
-            console.log(err);
-            res.json({ err });
+            res.send(JSON.stringify(err));
             return;
           }
           if (doc) {
